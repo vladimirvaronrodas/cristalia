@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Search, Plus, Minus, Sparkles } from 'lucide-react';
 import { formatearBs } from '../utils/formato';
 
@@ -72,7 +72,7 @@ export default function CatalogoPublico({
           />
         </div>
 
-        <div className="flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] scrollbar-none [&::-webkit-scrollbar]:hidden">
           <button
             type="button"
             onClick={() => setCategoriaActiva('TODOS')}
