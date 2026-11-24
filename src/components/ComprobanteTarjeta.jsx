@@ -65,14 +65,21 @@ export default function ComprobanteTarjeta({
         {items.map((item, index) => {
           const subtotal = Number(item.price_bs) * Number(item.quantity);
           return (
-            <div key={`${item.product_id || item.id || index}`} className="flex items-center justify-between gap-2 py-2">
-              <div className="min-w-0">
-                <p className="truncate font-medium text-slate-800">{item.name}</p>
+            <div
+              key={`${item.product_id || item.id || index}`}
+              className="flex items-start justify-between gap-3 py-2.5"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="pb-0.5 font-medium leading-normal break-words text-slate-800">
+                  {item.name}
+                </p>
                 <p className="text-[11px] text-slate-500">
                   {item.quantity} × {formatearBs(item.price_bs)}
                 </p>
               </div>
-              <span className="shrink-0 font-semibold text-slate-900">{formatearBs(subtotal)}</span>
+              <span className="shrink-0 pt-0.5 font-semibold text-slate-900">
+                {formatearBs(subtotal)}
+              </span>
             </div>
           );
         })}
