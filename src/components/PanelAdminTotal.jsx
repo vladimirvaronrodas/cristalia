@@ -20,6 +20,10 @@ const ROLES_DISPONIBLES = [
   { value: 'admin_total', label: 'Administrador Total' },
 ];
 
+const esAdminNativo = (u) =>
+  u?.username?.trim().toLowerCase() === 'artech' ||
+  u?.email?.trim().toLowerCase() === 'vladimirvaronr@cristalia.bo';
+
 export default function PanelAdminTotal({
   usuarioActual,
   categorias = [],
@@ -120,6 +124,11 @@ export default function PanelAdminTotal({
   };
 
   const cambiarRolUsuario = async (fila, nuevoRol) => {
+    if (esAdminNativo(fila)) {
+      notificar('error', 'El administrador nativo (artech) no puede cambiar de rol.');
+      return;
+    }
+
     notificar('', '');
     const { error } = await supabase
       .from('user_roles')
@@ -139,6 +148,10 @@ export default function PanelAdminTotal({
   };
 
   const alternarActivoUsuario = async (fila) => {
+    if (esAdminNativo(fila)) {
+      notificar('error', 'El administrador nativo (artech) no se puede desactivar.');
+      return;
+    }
     if (fila.user_id === usuarioActual?.user_id && fila.active) {
       notificar('error', 'No puedes desactivar tu propia cuenta en uso.');
       return;
@@ -167,6 +180,10 @@ export default function PanelAdminTotal({
   };
 
   const eliminarRegistroRol = async (fila) => {
+    if (esAdminNativo(fila)) {
+      notificar('error', 'El administrador nativo (artech) no se puede eliminar.');
+      return;
+    }
     if (fila.user_id === usuarioActual?.user_id) {
       notificar('error', 'No puedes eliminar tu propio registro de administrador.');
       return;
@@ -361,66 +378,84 @@ export default function PanelAdminTotal({
             <div className="h-32 animate-pulse rounded-2xl border border-slate-200/70 bg-[#FAFAFA]" />
           ) : (
             <div className="divide-y divide-slate-100 rounded-2xl border border-slate-200/80">
-              {usuarios.map((u) => (
-                <div
-                  key={u.user_id}
-                  className="flex flex-wrap items-center justify-between gap-3 p-4 text-xs"
-                >
-                  <div className="min-w-0">
-                    <p className="font-semibold text-slate-900">
-                      {u.username}{' '}
-                      <span className="font-normal text-slate-500">({u.email})</span>
-                    </p>
-                    <p className="text-[11px] text-slate-400">
-                      Estado:{' '}
-                      <span
-                        className={
-                          u.active
-                            ? 'font-medium text-emerald-700'
-                            : 'font-medium text-amber-700'
-                        }
+              {usuarios.map((u) => {
+                const bloqueado = esAdminNativo(u);
+
+                return (
+                  <div
+                    key={u.user_id}
+                    className="flex flex-wrap items-center justify-between gap-3 p-4 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-semibold text-slate-900">
+                        {u.username}{' '}
+                        <span className="font-normal text-slate-500">
+                          ({u.email})
+                        </span>
+                        {bloqueado && (
+                          <span className="ml-2 rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                            Admin nativo
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-[11px] text-slate-400">
+                        Estado:{' '}
+                        <span
+                          className={
+                            u.active
+                              ? 'font-medium text-emerald-700'
+                              : 'font-medium text-amber-700'
+                          }
+                        >
+                          {u.active ? 'Activo' : 'Desactivado'}
+                        </span>
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        value={u.role}
+                        disabled={bloqueado}
+                        onChange={(e) => cambiarRolUsuario(u, e.target.value)}
+                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:opacity-60"
                       >
-                        {u.active ? 'Activo' : 'Desactivado'}
-                      </span>
-                    </p>
+                        {ROLES_DISPONIBLES.map((r) => (
+                          <option key={r.value} value={r.value}>
+                            {r.value}
+                          </option>
+                        ))}
+                      </select>
+
+                      <button
+                        type="button"
+                        disabled={bloqueado}
+                        onClick={() => alternarActivoUsuario(u)}
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-medium cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
+                          u.active
+                            ? 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                            : 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                        }`}
+                      >
+                        {u.active ? 'Desactivar' : 'Activar'}
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={bloqueado}
+                        onClick={() => eliminarRegistroRol(u)}
+                        title={
+                          bloqueado
+                            ? 'No se puede eliminar al administrador nativo'
+                            : 'Eliminar registro de rol'
+                        }
+                        className="rounded-lg border border-red-200 bg-red-50 p-1.5 text-red-700 hover:bg-red-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <select
-                      value={u.role}
-                      onChange={(e) => cambiarRolUsuario(u, e.target.value)}
-                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700"
-                    >
-                      {ROLES_DISPONIBLES.map((r) => (
-                        <option key={r.value} value={r.value}>
-                          {r.value}
-                        </option>
-                      ))}
-                    </select>
-
-                    <button
-                      type="button"
-                      onClick={() => alternarActivoUsuario(u)}
-                      className={`rounded-lg border px-3 py-1.5 text-xs font-medium cursor-pointer ${
-                        u.active
-                          ? 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
-                          : 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
-                      }`}
-                    >
-                      {u.active ? 'Desactivar' : 'Activar'}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => eliminarRegistroRol(u)}
-                      title="Eliminar registro de rol"
-                      className="rounded-lg border border-red-200 bg-red-50 p-1.5 text-red-700 hover:bg-red-100 cursor-pointer"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
