@@ -4,21 +4,122 @@ import autoTable from 'jspdf-autotable';
 import { EMPRESA } from '../config/empresa';
 import { formatearBs } from './formato';
 
+const PROPIEDADES_COLOR = [
+  'color',
+  'backgroundColor',
+  'borderTopColor',
+  'borderRightColor',
+  'borderBottomColor',
+  'borderLeftColor',
+];
+
+function convertirColorARgb(valorCss, ctx) {
+  if (
+    !valorCss ||
+    valorCss === 'transparent' ||
+    valorCss === 'rgba(0, 0, 0, 0)' ||
+    (!valorCss.includes('oklch') && !valorCss.includes('oklab') && !valorCss.includes('color('))
+  ) {
+    return valorCss;
+  }
+  try {
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = '#000000';
+    ctx.fillStyle = valorCss;
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+    if (a === 0) return 'transparent';
+    if (a === 255) return `rgb(${r}, ${g}, ${b})`;
+    return `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})`;
+  } catch {
+    return valorCss;
+  }
+}
+
+async function renderizarCanvasComprobante(elemento) {
+  if (!elemento) return null;
+  if (document.fonts?.ready) {
+    await document.fonts.ready;
+  }
+
+  const lienzoAux = document.createElement('canvas');
+  lienzoAux.width = 1;
+  lienzoAux.height = 1;
+  const ctxAux = lienzoAux.getContext('2d', { willReadFrequently: true });
+
+  const nodosOriginales = [elemento, ...elemento.querySelectorAll('*')];
+  const mapaEstilos = new Map();
+
+  nodosOriginales.forEach((nodo, idx) => {
+    const clave = String(idx);
+    nodo.setAttribute('data-h2c-id', clave);
+    if (!ctxAux) return;
+
+    const computado = window.getComputedStyle(nodo);
+    const coloresConvertidos = {};
+    PROPIEDADES_COLOR.forEach((prop) => {
+      coloresConvertidos[prop] = convertirColorARgb(computado[prop], ctxAux);
+    });
+    mapaEstilos.set(clave, coloresConvertidos);
+  });
+
+  try {
+    return await html2canvas(elemento, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: '#FFFFFF',
+      logging: false,
+      onclone: (clonedDoc) => {
+        clonedDoc.querySelectorAll('style').forEach((styleTag) => {
+          if (styleTag.textContent) {
+            styleTag.textContent = styleTag.textContent
+              .replace(/oklch\([^)]*\)/gi, 'rgb(15, 23, 42)')
+              .replace(/oklab\([^)]*\)/gi, 'rgb(15, 23, 42)');
+          }
+        });
+
+        clonedDoc.querySelectorAll('[data-h2c-id]').forEach((clon) => {
+          const clave = clon.getAttribute('data-h2c-id');
+          const estilos = mapaEstilos.get(clave);
+          if (estilos) {
+            PROPIEDADES_COLOR.forEach((prop) => {
+              if (estilos[prop]) {
+                clon.style[prop] = estilos[prop];
+              }
+            });
+          }
+          clon.style.boxShadow = 'none';
+        });
+      },
+    });
+  } finally {
+    nodosOriginales.forEach((nodo) => nodo.removeAttribute('data-h2c-id'));
+  }
+}
+
+function descargarBlobArchivo(blob, nombreArchivo) {
+  if (!blob) return;
+  const url = URL.createObjectURL(blob);
+  const enlace = document.createElement('a');
+  enlace.href = url;
+  enlace.download = nombreArchivo;
+  enlace.rel = 'noopener';
+  document.body.appendChild(enlace);
+  enlace.click();
+  document.body.removeChild(enlace);
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
 export async function capturarElementoComoPng(elemento, nombreArchivo = 'cotizacion-cristalia.png') {
   if (!elemento) return null;
-  const canvas = await html2canvas(elemento, {
-    scale: 2,
-    useCORS: true,
-    backgroundColor: '#FFFFFF',
-  });
-  const dataUrl = canvas.toDataURL('image/png');
-  const enlace = document.createElement('a');
-  enlace.href = dataUrl;
-  enlace.download = nombreArchivo;
-  enlace.click();
+  const canvas = await renderizarCanvasComprobante(elemento);
+  if (!canvas) return null;
 
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-  return { dataUrl, blob, nombreArchivo };
+  if (blob) {
+    descargarBlobArchivo(blob, nombreArchivo);
+  }
+  return { blob, nombreArchivo };
 }
 
 export function generarPdfComprobante({
@@ -88,15 +189,18 @@ export function generarPdfComprobante({
   return doc;
 }
 
-export async function compartirComprobante({ elemento, titulo, texto, nombreArchivo = 'recibo-cristalia.png' }) {
+export async function compartirComprobante({
+  elemento,
+  titulo,
+  texto,
+  nombreArchivo = 'cotizacion-cristalia.png',
+}) {
   let blob = null;
   if (elemento) {
-    const canvas = await html2canvas(elemento, {
-      scale: 2,
-      useCORS: true,
-      backgroundColor: '#FFFFFF',
-    });
-    blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    const canvas = await renderizarCanvasComprobante(elemento);
+    if (canvas) {
+      blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    }
   }
 
   if (navigator.share) {
@@ -106,7 +210,6 @@ export async function compartirComprobante({ elemento, titulo, texto, nombreArch
         if (!navigator.canShare || navigator.canShare({ files: [archivo] })) {
           await navigator.share({
             title: titulo || EMPRESA.nombre,
-            text: texto || '',
             files: [archivo],
           });
           return { compartido: true, modo: 'archivo' };
@@ -125,12 +228,7 @@ export async function compartirComprobante({ elemento, titulo, texto, nombreArch
   }
 
   if (blob) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = nombreArchivo;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    descargarBlobArchivo(blob, nombreArchivo);
   }
   return { compartido: false, descargado: true };
 }
