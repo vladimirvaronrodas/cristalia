@@ -11,6 +11,7 @@ import {
   Share2,
   Trash2,
   X,
+  XCircle,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { EMPRESA } from '../config/empresa';
@@ -32,7 +33,7 @@ export default function PanelVentas({
   const [errorMsg, setErrorMsg] = useState('');
   const [avisoOk, setAvisoOk] = useState('');
 
-  const [filtroEstado, setFiltroEstado] = useState('TODOS'); // 'TODOS' | 'PENDIENTE' | 'DESPACHADO'
+  const [filtroEstado, setFiltroEstado] = useState('TODOS'); // 'TODOS' | 'PENDIENTE' | 'DECLINADO' | 'DESPACHADO'
   const [busqueda, setBusqueda] = useState('');
   const [pedidoSeleccionado, setPedidoSeleccionado] = useState(null);
   const [procesandoId, setProcesandoId] = useState(null);
@@ -115,6 +116,48 @@ export default function PanelVentas({
     }
   };
 
+  const marcarComoDeclinado = async (pedido) => {
+    if (
+      !window.confirm(
+        `¿Marcar el pedido ${pedido.order_code} de ${pedido.customer_name} como DECLINADO?`
+      )
+    ) {
+      return;
+    }
+
+    setErrorMsg('');
+    setAvisoOk('');
+    setProcesandoId(pedido.id);
+
+    try {
+      const { error } = await supabase
+        .from('orders')
+        .update({
+          status: 'DECLINADO',
+        })
+        .eq('id', pedido.id);
+
+      if (error) throw error;
+
+      const actualizado = {
+        ...pedido,
+        status: 'DECLINADO',
+      };
+
+      setPedidos((prev) =>
+        prev.map((p) => (p.id === pedido.id ? actualizado : p))
+      );
+      if (pedidoSeleccionado?.id === pedido.id) {
+        setPedidoSeleccionado(actualizado);
+      }
+      setAvisoOk(`Pedido ${pedido.order_code} marcado como DECLINADO.`);
+    } catch (err) {
+      setErrorMsg(err.message || 'No se pudo declinar el pedido.');
+    } finally {
+      setProcesandoId(null);
+    }
+  };
+
   const eliminarPedido = async (pedido) => {
     if (!esAdminTotal) return;
     if (
@@ -177,17 +220,19 @@ export default function PanelVentas({
     setPedidoSeleccionado(pedido);
     setTimeout(async () => {
       const despachado = pedido.status === 'DESPACHADO';
+      const declinado = pedido.status === 'DECLINADO';
+      const sufijo = despachado ? '-despachado' : declinado ? '-declinado' : '';
       await capturarElementoComoPng(
         comprobanteRef.current,
-        `${String(pedido.order_code || 'recibo').toLowerCase()}${
-          despachado ? '-despachado' : ''
-        }-cristalia.png`
+        `${String(pedido.order_code || 'recibo').toLowerCase()}${sufijo}-cristalia.png`
       );
     }, 80);
   };
 
   const descargarPdfPedido = (pedido) => {
     const despachado = pedido.status === 'DESPACHADO';
+    const declinado = pedido.status === 'DECLINADO';
+    const sufijo = despachado ? '-despachado' : declinado ? '-declinado' : '';
     generarPdfComprobante({
       codigo: pedido.order_code,
       fechaTexto: pedido.created_at
@@ -198,9 +243,7 @@ export default function PanelVentas({
       items: Array.isArray(pedido.items) ? pedido.items : [],
       totalBs: pedido.total_bs,
       esDespachado: despachado,
-      nombreArchivo: `${String(pedido.order_code || 'recibo').toLowerCase()}${
-        despachado ? '-despachado' : ''
-      }-cristalia.pdf`,
+      nombreArchivo: `${String(pedido.order_code || 'recibo').toLowerCase()}${sufijo}-cristalia.pdf`,
     });
   };
 
@@ -297,10 +340,11 @@ export default function PanelVentas({
           />
         </div>
 
-        <div className="flex gap-1.5">
+        <div className="flex flex-wrap gap-1.5">
           {[
             { id: 'TODOS', label: 'Todos' },
             { id: 'PENDIENTE', label: 'Pendientes' },
+            { id: 'DECLINADO', label: 'Declinados' },
             { id: 'DESPACHADO', label: 'Despachados' },
           ].map((tab) => (
             <button
@@ -349,6 +393,7 @@ export default function PanelVentas({
               items={Array.isArray(pedidoSeleccionado.items) ? pedidoSeleccionado.items : []}
               totalBs={pedidoSeleccionado.total_bs}
               selloDespachado={pedidoSeleccionado.status === 'DESPACHADO'}
+              selloDeclinado={pedidoSeleccionado.status === 'DECLINADO'}
             />
           </div>
         </div>
@@ -372,6 +417,8 @@ export default function PanelVentas({
         <div className="space-y-3">
           {pedidosFiltrados.map((ped) => {
             const estaDespachado = ped.status === 'DESPACHADO';
+            const estaDeclinado = ped.status === 'DECLINADO';
+            const estaPendiente = !estaDespachado && !estaDeclinado;
             const itemsLista = Array.isArray(ped.items) ? ped.items : [];
             const ocupado = procesandoId === ped.id;
 
@@ -390,11 +437,15 @@ export default function PanelVentas({
                         className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
                           estaDespachado
                             ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : estaDeclinado
+                            ? 'bg-rose-50 text-rose-700 border border-rose-200'
                             : 'bg-amber-50 text-amber-800 border border-amber-200'
                         }`}
                       >
                         {estaDespachado ? (
                           <CheckCircle2 className="h-3 w-3" />
+                        ) : estaDeclinado ? (
+                          <XCircle className="h-3 w-3" />
                         ) : (
                           <Clock className="h-3 w-3" />
                         )}
@@ -446,16 +497,28 @@ export default function PanelVentas({
 
                 {/* Acciones */}
                 <div className="mt-3.5 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
-                  {!estaDespachado && (
-                    <button
-                      type="button"
-                      disabled={ocupado}
-                      onClick={() => marcarComoDespachado(ped)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50 cursor-pointer"
-                    >
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                      <span>Marcar como DESPACHADO</span>
-                    </button>
+                  {estaPendiente && (
+                    <>
+                      <button
+                        type="button"
+                        disabled={ocupado}
+                        onClick={() => marcarComoDespachado(ped)}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50 cursor-pointer"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        <span>Marcar como DESPACHADO</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={ocupado}
+                        onClick={() => marcarComoDeclinado(ped)}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                        <span>Declinar</span>
+                      </button>
+                    </>
                   )}
 
                   <button

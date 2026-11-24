@@ -12,6 +12,7 @@ export default function ComprobanteTarjeta({
   items = [],
   totalBs = 0,
   selloDespachado = false,
+  selloDeclinado = false,
 }) {
   return (
     <div
@@ -21,6 +22,12 @@ export default function ComprobanteTarjeta({
       {selloDespachado && (
         <div className="pointer-events-none absolute top-4 right-4 rotate-[-8deg] rounded-lg border-2 border-emerald-600/80 bg-emerald-50/90 px-3 py-1 text-[11px] font-bold tracking-wider text-emerald-700 uppercase">
           DESPACHADO / COMPLETADO
+        </div>
+      )}
+
+      {!selloDespachado && selloDeclinado && (
+        <div className="pointer-events-none absolute top-4 right-4 rotate-[-8deg] rounded-lg border-2 border-rose-600/80 bg-rose-50/90 px-3 py-1 text-[11px] font-bold tracking-wider text-rose-700 uppercase">
+          DECLINADO
         </div>
       )}
 
