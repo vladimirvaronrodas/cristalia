@@ -9,7 +9,14 @@ export function formatearBs(monto) {
 }
 
 export function limpiarTelefono(telefono) {
-  return String(telefono || '').replace(/\D/g, '');
+  const soloDigitos = String(telefono || '')
+    .replace(/\D/g, '')
+    .replace(/^0+/, '');
+  if (!soloDigitos) return '';
+  if (soloDigitos.length === 8) {
+    return `591${soloDigitos}`;
+  }
+  return soloDigitos;
 }
 
 export function crearUrlWhatsApp(telefono, mensaje) {
