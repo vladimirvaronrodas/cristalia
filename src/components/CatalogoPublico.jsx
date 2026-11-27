@@ -1,5 +1,12 @@
 import { useMemo, useState } from 'react';
-import { Search, Plus, Minus, Sparkles } from 'lucide-react';
+import {
+  Search,
+  Plus,
+  Minus,
+  Sparkles,
+  ChevronLeft,
+  ChevronRight,
+} from 'lucide-react';
 import { formatearBs } from '../utils/formato';
 
 export default function CatalogoPublico({
@@ -11,6 +18,8 @@ export default function CatalogoPublico({
   const [categoriaActiva, setCategoriaActiva] = useState('TODOS');
   const [busqueda, setBusqueda] = useState('');
   const [cantidadesPorProducto, setCantidadesPorProducto] = useState({});
+  const [slidePorProducto, setSlidePorProducto] = useState({});
+  const [inicioToqueX, setInicioToqueX] = useState(null);
 
   const mapaCategoriasPorNombre = useMemo(() => {
     const porId = new Map(categorias.map((c) => [c.id, c.name]));
@@ -54,6 +63,14 @@ export default function CatalogoPublico({
       const actual = prev[id] || 1;
       const siguiente = Math.max(1, actual + delta);
       return { ...prev, [id]: siguiente };
+    });
+  };
+
+  const cambiarSlide = (prodId, totalSlides, delta) => {
+    setSlidePorProducto((prev) => {
+      const actual = prev[prodId] || 0;
+      const siguiente = (actual + delta + totalSlides) % totalSlides;
+      return { ...prev, [prodId]: siguiente };
     });
   };
 
@@ -121,6 +138,11 @@ export default function CatalogoPublico({
           {productosFiltrados.map((prod) => {
             const catsProd = mapaCategoriasPorNombre.get(prod.id) || [];
             const cant = obtenerCantidad(prod.id);
+            const imagenes = [prod.image_url, prod.image_url_2].filter(Boolean);
+            const tieneCarrusel = imagenes.length > 1;
+            const indiceSlide = tieneCarrusel
+              ? Math.min(slidePorProducto[prod.id] || 0, imagenes.length - 1)
+              : 0;
 
             return (
               <article
@@ -128,16 +150,95 @@ export default function CatalogoPublico({
                 className="group flex flex-col justify-between overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-2xs transition hover:border-slate-300 hover:shadow-sm"
               >
                 <div>
-                  <div className="flex aspect-square w-full items-center justify-center bg-[#FAFAFA] p-4">
-                    {prod.image_url ? (
-                      <img
-                        src={prod.image_url}
-                        alt={prod.name}
-                        loading="lazy"
-                        className="h-full w-full object-contain transition duration-300 group-hover:scale-[1.02]"
-                      />
+                  <div
+                    onTouchStart={(e) => {
+                      if (tieneCarrusel) {
+                        setInicioToqueX(e.touches[0].clientX);
+                      }
+                    }}
+                    onTouchEnd={(e) => {
+                      if (!tieneCarrusel || inicioToqueX === null) return;
+                      const deltaX = e.changedTouches[0].clientX - inicioToqueX;
+                      if (Math.abs(deltaX) > 35) {
+                        cambiarSlide(prod.id, imagenes.length, deltaX < 0 ? 1 : -1);
+                      }
+                      setInicioToqueX(null);
+                    }}
+                    className="relative aspect-square w-full overflow-hidden bg-[#FAFAFA]"
+                  >
+                    {imagenes.length === 0 ? (
+                      <div className="flex h-full w-full items-center justify-center p-4">
+                        <span className="text-xs text-slate-400">Sin imagen</span>
+                      </div>
+                    ) : !tieneCarrusel ? (
+                      <div className="flex h-full w-full items-center justify-center p-4">
+                        <img
+                          src={imagenes[0]}
+                          alt={prod.name}
+                          loading="lazy"
+                          className="h-full w-full object-contain transition duration-300 group-hover:scale-[1.02]"
+                        />
+                      </div>
                     ) : (
-                      <span className="text-xs text-slate-400">Sin imagen</span>
+                      <>
+                        <div
+                          className="flex h-full w-full transition-transform duration-300 ease-out"
+                          style={{ transform: `translateX(-${indiceSlide * 100}%)` }}
+                        >
+                          {imagenes.map((src, idx) => (
+                            <div
+                              key={idx}
+                              className="flex h-full w-full shrink-0 items-center justify-center p-4"
+                            >
+                              <img
+                                src={src}
+                                alt={`${prod.name} (${idx + 1})`}
+                                loading="lazy"
+                                className="h-full w-full object-contain transition duration-300 group-hover:scale-[1.02]"
+                              />
+                            </div>
+                          ))}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => cambiarSlide(prod.id, imagenes.length, -1)}
+                          aria-label="Foto anterior"
+                          className="absolute top-1/2 left-2 -translate-y-1/2 rounded-full border border-slate-200/80 bg-white/85 p-1 text-slate-700 shadow-2xs backdrop-blur-[2px] transition hover:bg-white hover:text-slate-900 cursor-pointer"
+                        >
+                          <ChevronLeft className="h-3.5 w-3.5" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => cambiarSlide(prod.id, imagenes.length, 1)}
+                          aria-label="Siguiente foto"
+                          className="absolute top-1/2 right-2 -translate-y-1/2 rounded-full border border-slate-200/80 bg-white/85 p-1 text-slate-700 shadow-2xs backdrop-blur-[2px] transition hover:bg-white hover:text-slate-900 cursor-pointer"
+                        >
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        </button>
+
+                        <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-white/80 px-2 py-0.5 backdrop-blur-[2px]">
+                          {imagenes.map((_, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              aria-label={`Ver foto ${idx + 1}`}
+                              onClick={() =>
+                                setSlidePorProducto((prev) => ({
+                                  ...prev,
+                                  [prod.id]: idx,
+                                }))
+                              }
+                              className={`h-1.5 rounded-full transition-all cursor-pointer ${
+                                indiceSlide === idx
+                                  ? 'w-3.5 bg-slate-800'
+                                  : 'w-1.5 bg-slate-300 hover:bg-slate-400'
+                              }`}
+                            />
+                          ))}
+                        </div>
+                      </>
                     )}
                   </div>
 

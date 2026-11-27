@@ -10,12 +10,41 @@ import {
   LogOut,
   Check,
   X,
+  Upload,
+  Plus,
+  Layers,
+  ImagePlus,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { EMPRESA } from '../config/empresa';
 import { formatearBs } from '../utils/formato';
 import { optimizarImagenEnNavegador } from '../utils/imagen';
 import { generarCatalogoPdf } from '../utils/catalogoPdf';
+
+function extraerNombreDesdeArchivo(nombreArchivo = '') {
+  const sinExtension = String(nombreArchivo).replace(/\.[^/.]+$/, '');
+  const conEspacios = sinExtension
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!conEspacios) return '';
+  return conEspacios.charAt(0).toUpperCase() + conEspacios.slice(1);
+}
+
+function crearFilaLoteVacia() {
+  return {
+    idTemporal: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    archivo: null,
+    nombreArchivo: '',
+    vistaPrevia: '',
+    nombre: '',
+    precio: '',
+  };
+}
+
+function crearBloqueFilas(cantidad = 5) {
+  return Array.from({ length: cantidad }, () => crearFilaLoteVacia());
+}
 
 export default function PanelCatalogo({
   usuarioActual,
@@ -26,20 +55,32 @@ export default function PanelCatalogo({
   onCerrarSesion,
 }) {
   const [pestana, setPestana] = useState('PRODUCTOS'); // 'PRODUCTOS' | 'CATEGORIAS' | 'PDF'
+  const [modoCarga, setModoCarga] = useState('INDIVIDUAL'); // 'INDIVIDUAL' | 'LOTE'
 
   // Estado categorías
   const [nuevaCategoria, setNuevaCategoria] = useState('');
   const [guardandoCat, setGuardandoCat] = useState(false);
 
-  // Estado formulario producto (crear / editar)
+  // Estado formulario producto individual (crear / editar)
   const [editandoId, setEditandoId] = useState(null);
   const [nombreProd, setNombreProd] = useState('');
   const [precioProd, setPrecioProd] = useState('');
   const [visibleProd, setVisibleProd] = useState(true);
   const [catsSeleccionadasProd, setCatsSeleccionadasProd] = useState([]);
   const [archivoImagen, setArchivoImagen] = useState(null);
+  const [nombreArchivo1, setNombreArchivo1] = useState('');
   const [urlImagenActual, setUrlImagenActual] = useState('');
+  const [archivoImagen2, setArchivoImagen2] = useState(null);
+  const [nombreArchivo2, setNombreArchivo2] = useState('');
+  const [urlImagen2Actual, setUrlImagen2Actual] = useState('');
   const [guardandoProd, setGuardandoProd] = useState(false);
+
+  // Estado carga por lotes
+  const [filasLote, setFilasLote] = useState(() => crearBloqueFilas(5));
+  const [catsLote, setCatsLote] = useState([]);
+  const [visibleLote, setVisibleLote] = useState(true);
+  const [arrastrandoSobre, setArrastrandoSobre] = useState(false);
+  const [progresoLote, setProgresoLote] = useState('');
 
   // Filtros en tabla de productos
   const [filtroCat, setFiltroCat] = useState('TODOS');
@@ -117,7 +158,7 @@ export default function PanelCatalogo({
     }
   };
 
-  // --- PRODUCTOS ---
+  // --- PRODUCTO INDIVIDUAL ---
   const limpiarFormularioProducto = () => {
     setEditandoId(null);
     setNombreProd('');
@@ -125,11 +166,16 @@ export default function PanelCatalogo({
     setVisibleProd(true);
     setCatsSeleccionadasProd([]);
     setArchivoImagen(null);
+    setNombreArchivo1('');
     setUrlImagenActual('');
+    setArchivoImagen2(null);
+    setNombreArchivo2('');
+    setUrlImagen2Actual('');
   };
 
   const cargarProductoParaEditar = (prod) => {
     setPestana('PRODUCTOS');
+    setModoCarga('INDIVIDUAL');
     setEditandoId(prod.id);
     setNombreProd(prod.name);
     setPrecioProd(String(prod.price_bs));
@@ -137,7 +183,12 @@ export default function PanelCatalogo({
     setCatsSeleccionadasProd(catsIdsPorProducto.get(prod.id) || []);
     setUrlImagenActual(prod.image_url || '');
     setArchivoImagen(null);
+    setNombreArchivo1('');
+    setUrlImagen2Actual(prod.image_url_2 || '');
+    setArchivoImagen2(null);
+    setNombreArchivo2('');
     notificar('', '');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const alternarCategoriaProducto = (catId) => {
@@ -153,14 +204,65 @@ export default function PanelCatalogo({
     try {
       const optimizada = await optimizarImagenEnNavegador(file);
       setArchivoImagen(optimizada);
+      setNombreArchivo1(file.name);
+      if (!nombreProd.trim()) {
+        setNombreProd(extraerNombreDesdeArchivo(file.name));
+      }
       notificar(
         'ok',
-        `Imagen lista (${(optimizada.size / 1024).toFixed(0)} KB en WebP).`
+        `Foto principal "${file.name}" lista (${(optimizada.size / 1024).toFixed(0)} KB en WebP).`
       );
     } catch (err) {
       setArchivoImagen(null);
+      setNombreArchivo1('');
       notificar('error', err.message);
     }
+  };
+
+  const manejarSeleccionArchivo2 = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    notificar('', '');
+    try {
+      const optimizada = await optimizarImagenEnNavegador(file);
+      setArchivoImagen2(optimizada);
+      setNombreArchivo2(file.name);
+      notificar(
+        'ok',
+        `Segunda foto "${file.name}" lista (${(optimizada.size / 1024).toFixed(0)} KB en WebP).`
+      );
+    } catch (err) {
+      setArchivoImagen2(null);
+      setNombreArchivo2('');
+      notificar('error', err.message);
+    }
+  };
+
+  const quitarSegundaFoto = () => {
+    setArchivoImagen2(null);
+    setNombreArchivo2('');
+    setUrlImagen2Actual('');
+  };
+
+  const subirArchivoWebp = async (archivoWebp) => {
+    const rutaArchivo = `${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}.webp`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('productos')
+      .upload(rutaArchivo, archivoWebp, {
+        contentType: 'image/webp',
+        upsert: false,
+      });
+
+    if (uploadError) throw uploadError;
+
+    const { data: publicData } = supabase.storage
+      .from('productos')
+      .getPublicUrl(rutaArchivo);
+
+    return publicData.publicUrl;
   };
 
   const guardarProducto = async (e) => {
@@ -178,26 +280,13 @@ export default function PanelCatalogo({
     setGuardandoProd(true);
     try {
       let imageUrlFinal = urlImagenActual || null;
-
       if (archivoImagen) {
-        const rutaArchivo = `${Date.now()}-${Math.random()
-          .toString(36)
-          .slice(2, 8)}.webp`;
+        imageUrlFinal = await subirArchivoWebp(archivoImagen);
+      }
 
-        const { error: uploadError } = await supabase.storage
-          .from('productos')
-          .upload(rutaArchivo, archivoImagen, {
-            contentType: 'image/webp',
-            upsert: false,
-          });
-
-        if (uploadError) throw uploadError;
-
-        const { data: publicData } = supabase.storage
-          .from('productos')
-          .getPublicUrl(rutaArchivo);
-
-        imageUrlFinal = publicData.publicUrl;
+      let imageUrl2Final = urlImagen2Actual || null;
+      if (archivoImagen2) {
+        imageUrl2Final = await subirArchivoWebp(archivoImagen2);
       }
 
       let productoId = editandoId;
@@ -210,6 +299,7 @@ export default function PanelCatalogo({
             price_bs: precioNumero,
             is_visible: visibleProd,
             image_url: imageUrlFinal,
+            image_url_2: imageUrl2Final,
             updated_at: new Date().toISOString(),
           })
           .eq('id', editandoId);
@@ -223,6 +313,7 @@ export default function PanelCatalogo({
             price_bs: precioNumero,
             is_visible: visibleProd,
             image_url: imageUrlFinal,
+            image_url_2: imageUrl2Final,
           })
           .select('id')
           .single();
@@ -259,6 +350,176 @@ export default function PanelCatalogo({
     } catch (err) {
       notificar('error', err.message || 'No se pudo guardar el producto.');
     } finally {
+      setGuardandoProd(false);
+    }
+  };
+
+  // --- CARGA POR LOTES ---
+  const alternarCategoriaLote = (catId) => {
+    setCatsLote((prev) =>
+      prev.includes(catId) ? prev.filter((id) => id !== catId) : [...prev, catId]
+    );
+  };
+
+  const procesarArchivosEnLote = async (listaArchivos) => {
+    const archivos = Array.from(listaArchivos || []).filter((f) =>
+      ['image/jpeg', 'image/png', 'image/webp'].includes(f.type)
+    );
+    if (archivos.length === 0) {
+      notificar('error', 'Selecciona imágenes válidas en formato JPG, PNG o WebP.');
+      return;
+    }
+
+    notificar('', '');
+    const nuevasFilas = [];
+
+    for (const file of archivos) {
+      try {
+        const optimizada = await optimizarImagenEnNavegador(file);
+        nuevasFilas.push({
+          idTemporal: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          archivo: optimizada,
+          nombreArchivo: file.name,
+          vistaPrevia: URL.createObjectURL(optimizada),
+          nombre: extraerNombreDesdeArchivo(file.name),
+          precio: '',
+        });
+      } catch (err) {
+        notificar('error', `Error en "${file.name}": ${err.message}`);
+      }
+    }
+
+    if (nuevasFilas.length > 0) {
+      setFilasLote((prev) => {
+        const filasConDatos = prev.filter(
+          (f) => f.archivo || f.nombre.trim() || String(f.precio).trim()
+        );
+        return [...filasConDatos, ...nuevasFilas];
+      });
+      notificar(
+        'ok',
+        `${nuevasFilas.length} foto(s) cargadas con nombre extraído automáticamente.`
+      );
+    }
+  };
+
+  const manejarFotoFilaLote = async (idTemporal, file) => {
+    if (!file) return;
+    notificar('', '');
+    try {
+      const optimizada = await optimizarImagenEnNavegador(file);
+      const vistaPrevia = URL.createObjectURL(optimizada);
+      setFilasLote((prev) =>
+        prev.map((fila) => {
+          if (fila.idTemporal !== idTemporal) return fila;
+          return {
+            ...fila,
+            archivo: optimizada,
+            nombreArchivo: file.name,
+            vistaPrevia,
+            nombre: fila.nombre.trim()
+              ? fila.nombre
+              : extraerNombreDesdeArchivo(file.name),
+          };
+        })
+      );
+    } catch (err) {
+      notificar('error', err.message || 'No se pudo procesar la imagen.');
+    }
+  };
+
+  const actualizarCampoFilaLote = (idTemporal, campo, valor) => {
+    setFilasLote((prev) =>
+      prev.map((fila) =>
+        fila.idTemporal === idTemporal ? { ...fila, [campo]: valor } : fila
+      )
+    );
+  };
+
+  const eliminarFilaLote = (idTemporal) => {
+    setFilasLote((prev) => {
+      const restantes = prev.filter((f) => f.idTemporal !== idTemporal);
+      return restantes.length > 0 ? restantes : crearBloqueFilas(5);
+    });
+  };
+
+  const guardarLoteProductos = async (e) => {
+    e.preventDefault();
+    notificar('', '');
+
+    const filasActivas = filasLote.filter(
+      (f) => f.archivo || f.nombre.trim() || String(f.precio).trim() !== ''
+    );
+
+    if (filasActivas.length === 0) {
+      notificar('error', 'Agrega al menos un producto con foto, nombre y precio.');
+      return;
+    }
+
+    for (let idx = 0; idx < filasActivas.length; idx++) {
+      const fila = filasActivas[idx];
+      const precioNum = Number(fila.precio);
+      if (!fila.nombre.trim()) {
+        notificar('error', `Falta el nombre en el producto #${idx + 1} del lote.`);
+        return;
+      }
+      if (String(fila.precio).trim() === '' || Number.isNaN(precioNum) || precioNum < 0) {
+        notificar(
+          'error',
+          `Ingresa un precio válido en Bs. para "${fila.nombre.trim()}".`
+        );
+        return;
+      }
+    }
+
+    setGuardandoProd(true);
+    try {
+      for (let i = 0; i < filasActivas.length; i++) {
+        const fila = filasActivas[i];
+        setProgresoLote(`Guardando ${i + 1} de ${filasActivas.length}...`);
+
+        let imageUrl = null;
+        if (fila.archivo) {
+          imageUrl = await subirArchivoWebp(fila.archivo);
+        }
+
+        const { data: creado, error: insertError } = await supabase
+          .from('products')
+          .insert({
+            name: fila.nombre.trim(),
+            price_bs: Number(fila.precio),
+            is_visible: visibleLote,
+            image_url: imageUrl,
+            image_url_2: null,
+          })
+          .select('id')
+          .single();
+
+        if (insertError) throw insertError;
+
+        if (catsLote.length > 0) {
+          const filasRel = catsLote.map((catId) => ({
+            product_id: creado.id,
+            category_id: catId,
+          }));
+          const { error: relError } = await supabase
+            .from('product_categories')
+            .insert(filasRel);
+          if (relError) throw relError;
+        }
+      }
+
+      await onRecargarTodo();
+      setFilasLote(crearBloqueFilas(5));
+      setProgresoLote('');
+      notificar(
+        'ok',
+        `Se publicaron ${filasActivas.length} producto(s) correctamente en el catálogo.`
+      );
+    } catch (err) {
+      notificar('error', err.message || 'Ocurrió un error al guardar el lote.');
+    } finally {
+      setProgresoLote('');
       setGuardandoProd(false);
     }
   };
@@ -392,74 +653,150 @@ export default function PanelCatalogo({
       {/* --- PESTAÑA PRODUCTOS --- */}
       {pestana === 'PRODUCTOS' && (
         <div className="space-y-6">
-          <form
-            onSubmit={guardarProducto}
-            className="space-y-4 rounded-2xl border border-slate-200/80 bg-[#FAFAFA] p-4 sm:p-5"
-          >
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-900">
-                {editandoId ? 'Editar producto' : 'Nuevo producto'}
-              </h2>
-              {editandoId && (
-                <button
-                  type="button"
-                  onClick={limpiarFormularioProducto}
-                  className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
-                >
-                  <X className="h-3.5 w-3.5" /> Cancelar edición
-                </button>
-              )}
+          {/* Selector de modo: 1 producto vs Varios productos por lote */}
+          {!editandoId && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setModoCarga('INDIVIDUAL');
+                  notificar('', '');
+                }}
+                className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition cursor-pointer ${
+                  modoCarga === 'INDIVIDUAL'
+                    ? 'bg-slate-800 text-white'
+                    : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <PackagePlus className="h-3.5 w-3.5" />
+                <span>Agregar 1 producto</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setModoCarga('LOTE');
+                  notificar('', '');
+                }}
+                className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition cursor-pointer ${
+                  modoCarga === 'LOTE'
+                    ? 'bg-slate-800 text-white'
+                    : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <Layers className="h-3.5 w-3.5" />
+                <span>Agregar varios productos (por lote)</span>
+              </button>
             </div>
+          )}
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div className="sm:col-span-2">
-                <label className="mb-1 block text-[11px] font-medium text-slate-600">
-                  Nombre del producto *
-                </label>
-                <input
-                  type="text"
-                  value={nombreProd}
-                  onChange={(e) => setNombreProd(e.target.value)}
-                  placeholder="Ej. Juego de 6 copas de cristal tallado"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 outline-none focus:border-slate-400"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-[11px] font-medium text-slate-600">
-                  Precio en Bs. *
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={precioProd}
-                  onChange={(e) => setPrecioProd(e.target.value)}
-                  placeholder="Ej. 180.00"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 outline-none focus:border-slate-400"
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-[11px] font-medium text-slate-600">
-                  Imagen (JPG, PNG o WebP — optimización automática)
-                </label>
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  onChange={manejarSeleccionArchivo}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600"
-                />
-                {urlImagenActual && !archivoImagen && (
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    Conservando imagen actual del producto.
-                  </p>
+          {/* MODO INDIVIDUAL */}
+          {(modoCarga === 'INDIVIDUAL' || editandoId) && (
+            <form
+              onSubmit={guardarProducto}
+              className="space-y-4 rounded-2xl border border-slate-200/80 bg-[#FAFAFA] p-4 sm:p-5"
+            >
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-slate-900">
+                  {editandoId ? 'Editar producto' : 'Nuevo producto'}
+                </h2>
+                {editandoId && (
+                  <button
+                    type="button"
+                    onClick={limpiarFormularioProducto}
+                    className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
+                  >
+                    <X className="h-3.5 w-3.5" /> Cancelar edición
+                  </button>
                 )}
               </div>
 
-              <div className="flex items-end pb-1">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="sm:col-span-2">
+                  <label className="mb-1 block text-[11px] font-medium text-slate-600">
+                    Nombre del producto * (se completa solo al subir la foto)
+                  </label>
+                  <input
+                    type="text"
+                    value={nombreProd}
+                    onChange={(e) => setNombreProd(e.target.value)}
+                    placeholder="Ej. Juego de 6 copas de cristal tallado"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 outline-none focus:border-slate-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-600">
+                    Precio en Bs. *
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={precioProd}
+                    onChange={(e) => setPrecioProd(e.target.value)}
+                    placeholder="Ej. 180.00"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 outline-none focus:border-slate-400"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-600">
+                    Foto 1 — Principal (JPG, PNG o WebP)
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={manejarSeleccionArchivo}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600"
+                  />
+                  {nombreArchivo1 && (
+                    <p className="mt-1 truncate text-[11px] font-medium text-emerald-700">
+                      Archivo: {nombreArchivo1}
+                    </p>
+                  )}
+                  {urlImagenActual && !archivoImagen && (
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Conservando foto principal actual.
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-600">
+                    Foto 2 — Opcional (para carrusel suave)
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={manejarSeleccionArchivo2}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600"
+                  />
+                  {nombreArchivo2 && (
+                    <p className="mt-1 truncate text-[11px] font-medium text-emerald-700">
+                      Archivo 2: {nombreArchivo2}
+                    </p>
+                  )}
+                  {(urlImagen2Actual || archivoImagen2) && (
+                    <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
+                      <span>
+                        {archivoImagen2 ? 'Segunda foto lista.' : 'Segunda foto activa.'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={quitarSegundaFoto}
+                        className="text-red-600 hover:underline cursor-pointer"
+                      >
+                        Quitar foto 2
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div>
                 <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
                   <input
                     type="checkbox"
@@ -470,46 +807,255 @@ export default function PanelCatalogo({
                   <span>Visible en el catálogo público</span>
                 </label>
               </div>
-            </div>
 
-            <div>
-              <p className="mb-1.5 text-[11px] font-medium text-slate-600">
-                Categorías (puedes marcar una o varias)
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {categorias.map((cat) => {
-                  const marcada = catsSeleccionadasProd.includes(cat.id);
-                  return (
-                    <button
-                      key={cat.id}
-                      type="button"
-                      onClick={() => alternarCategoriaProducto(cat.id)}
-                      className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition cursor-pointer ${
-                        marcada
-                          ? 'bg-slate-900 text-white'
-                          : 'border border-slate-200 bg-white text-slate-600 hover:border-slate-300'
-                      }`}
-                    >
-                      {marcada && <Check className="h-3 w-3" />}
-                      <span>{cat.name}</span>
-                    </button>
-                  );
-                })}
+              <div>
+                <p className="mb-1.5 text-[11px] font-medium text-slate-600">
+                  Categorías (puedes marcar una o varias)
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {categorias.map((cat) => {
+                    const marcada = catsSeleccionadasProd.includes(cat.id);
+                    return (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => alternarCategoriaProducto(cat.id)}
+                        className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition cursor-pointer ${
+                          marcada
+                            ? 'bg-slate-900 text-white'
+                            : 'border border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+                        }`}
+                      >
+                        {marcada && <Check className="h-3 w-3" />}
+                        <span>{cat.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
 
-            <button
-              type="submit"
-              disabled={guardandoProd}
-              className="rounded-xl bg-slate-900 px-5 py-2.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+              <button
+                type="submit"
+                disabled={guardandoProd}
+                className="rounded-xl bg-slate-900 px-5 py-2.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+              >
+                {guardandoProd
+                  ? 'Guardando...'
+                  : editandoId
+                  ? 'Guardar cambios'
+                  : 'Publicar producto'}
+              </button>
+            </form>
+          )}
+
+          {/* MODO LOTE (VARIOS PRODUCTOS A LA VEZ) */}
+          {modoCarga === 'LOTE' && !editandoId && (
+            <form
+              onSubmit={guardarLoteProductos}
+              className="space-y-4 rounded-2xl border border-slate-200/80 bg-[#FAFAFA] p-4 sm:p-5"
             >
-              {guardandoProd
-                ? 'Guardando...'
-                : editandoId
-                ? 'Guardar cambios'
-                : 'Publicar producto'}
-            </button>
-          </form>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    Carga rápida por lote
+                  </h2>
+                  <p className="text-[11px] text-slate-500">
+                    Elige la categoría del grupo, arrastra varias fotos o carga fila por fila de 5 en 5.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setFilasLote(crearBloqueFilas(5))}
+                  className="text-xs font-medium text-slate-500 hover:text-slate-800 cursor-pointer"
+                >
+                  Limpiar filas
+                </button>
+              </div>
+
+              {/* Categoría general para todo el lote */}
+              <div className="rounded-xl border border-slate-200/80 bg-white p-3.5">
+                <p className="mb-1.5 text-[11px] font-semibold text-slate-700">
+                  Categoría(s) general(es) para todo este lote:
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {categorias.map((cat) => {
+                    const marcada = catsLote.includes(cat.id);
+                    return (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => alternarCategoriaLote(cat.id)}
+                        className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition cursor-pointer ${
+                          marcada
+                            ? 'bg-slate-900 text-white'
+                            : 'border border-slate-200 bg-[#FAFAFA] text-slate-600 hover:border-slate-300'
+                        }`}
+                      >
+                        {marcada && <Check className="h-3 w-3" />}
+                        <span>{cat.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <label className="mt-3 inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={visibleLote}
+                    onChange={(e) => setVisibleLote(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300"
+                  />
+                  <span>Publicar todos como visibles en el catálogo público</span>
+                </label>
+              </div>
+
+              {/* Zona de arrastrar o seleccionar múltiples imágenes */}
+              <label
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setArrastrandoSobre(true);
+                }}
+                onDragLeave={() => setArrastrandoSobre(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setArrastrandoSobre(false);
+                  procesarArchivosEnLote(e.dataTransfer.files);
+                }}
+                className={`flex flex-col items-center justify-center rounded-2xl border-2 border-dashed p-5 text-center transition cursor-pointer ${
+                  arrastrandoSobre
+                    ? 'border-slate-900 bg-slate-100'
+                    : 'border-slate-300 bg-white hover:border-slate-400'
+                }`}
+              >
+                <Upload className="h-6 w-6 text-slate-500" />
+                <p className="mt-1.5 text-xs font-semibold text-slate-800">
+                  Arrastra varias fotos aquí o haz clic para seleccionarlas juntas
+                </p>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  Extrae automáticamente el nombre de cada foto (JPG, PNG o WebP)
+                </p>
+                <input
+                  type="file"
+                  multiple
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={(e) => {
+                    procesarArchivosEnLote(e.target.files);
+                    e.target.value = '';
+                  }}
+                  className="hidden"
+                />
+              </label>
+
+              {/* Filas de productos del lote */}
+              <div className="space-y-2.5">
+                {filasLote.map((fila, idx) => (
+                  <div
+                    key={fila.idTemporal}
+                    className="grid grid-cols-1 gap-2.5 rounded-xl border border-slate-200 bg-white p-3 sm:grid-cols-12 sm:items-center"
+                  >
+                    {/* Foto + nombre de archivo */}
+                    <div className="flex items-center gap-2.5 sm:col-span-4">
+                      <span className="w-4 shrink-0 text-[11px] font-bold text-slate-400">
+                        {idx + 1}.
+                      </span>
+                      {fila.vistaPrevia ? (
+                        <img
+                          src={fila.vistaPrevia}
+                          alt={fila.nombre || 'Vista previa'}
+                          className="h-12 w-12 shrink-0 rounded-lg border border-slate-200 bg-[#FAFAFA] object-contain p-0.5"
+                        />
+                      ) : (
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-dashed border-slate-300 bg-[#FAFAFA] text-slate-400">
+                          <ImagePlus className="h-4 w-4" />
+                        </div>
+                      )}
+
+                      <div className="min-w-0 flex-1">
+                        <label className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-[#FAFAFA] px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 cursor-pointer">
+                          <span>{fila.archivo ? 'Cambiar foto' : 'Subir foto'}</span>
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp"
+                            onChange={(e) => {
+                              manejarFotoFilaLote(fila.idTemporal, e.target.files?.[0]);
+                              e.target.value = '';
+                            }}
+                            className="hidden"
+                          />
+                        </label>
+                        {fila.nombreArchivo && (
+                          <p
+                            title={fila.nombreArchivo}
+                            className="mt-1 truncate text-[10px] text-emerald-700"
+                          >
+                            {fila.nombreArchivo}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Nombre del producto */}
+                    <div className="sm:col-span-5">
+                      <input
+                        type="text"
+                        value={fila.nombre}
+                        onChange={(e) =>
+                          actualizarCampoFilaLote(fila.idTemporal, 'nombre', e.target.value)
+                        }
+                        placeholder="Nombre del producto"
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs text-slate-800 outline-none focus:border-slate-400"
+                      />
+                    </div>
+
+                    {/* Precio + quitar fila */}
+                    <div className="flex items-center gap-2 sm:col-span-3">
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={fila.precio}
+                        onChange={(e) =>
+                          actualizarCampoFilaLote(fila.idTemporal, 'precio', e.target.value)
+                        }
+                        placeholder="Precio Bs."
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs text-slate-800 outline-none focus:border-slate-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => eliminarFilaLote(fila.idTemporal)}
+                        title="Quitar fila"
+                        className="shrink-0 rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600 cursor-pointer"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={guardandoProd}
+                  onClick={() => setFilasLote((prev) => [...prev, ...crearBloqueFilas(5)])}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>Agregar 5 espacios</span>
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={guardandoProd}
+                  className="rounded-xl bg-slate-900 px-5 py-2.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+                >
+                  {guardandoProd
+                    ? progresoLote || 'Publicando lote...'
+                    : 'Publicar lote de productos'}
+                </button>
+              </div>
+            </form>
+          )}
 
           {/* Filtros y listado */}
           <div className="space-y-3">
@@ -565,6 +1111,7 @@ export default function PanelCatalogo({
                           >
                             {prod.is_visible ? 'Visible' : 'Oculto'}
                           </span>
+                          {prod.image_url_2 ? ' · 2 fotos' : ''}
                         </p>
                         {nombresCats.length > 0 && (
                           <p className="text-[11px] text-slate-400">
