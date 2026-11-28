@@ -14,12 +14,37 @@ import {
   Plus,
   Layers,
   ImagePlus,
+  RefreshCw,
+  ArrowRight,
+  AlertCircle,
+  CheckCircle2,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { EMPRESA } from '../config/empresa';
 import { formatearBs } from '../utils/formato';
 import { optimizarImagenEnNavegador } from '../utils/imagen';
 import { generarCatalogoPdf } from '../utils/catalogoPdf';
+
+const PALABRAS_IGNORADAS = new Set([
+  'de',
+  'del',
+  'la',
+  'el',
+  'los',
+  'las',
+  'para',
+  'con',
+  'sin',
+  'por',
+  'en',
+  'y',
+  'o',
+  'a',
+  'un',
+  'una',
+  'bs',
+  'bob',
+]);
 
 function extraerNombreDesdeArchivo(nombreArchivo = '') {
   const sinExtension = String(nombreArchivo).replace(/\.[^/.]+$/, '');
@@ -29,6 +54,93 @@ function extraerNombreDesdeArchivo(nombreArchivo = '') {
     .trim();
   if (!conEspacios) return '';
   return conEspacios.charAt(0).toUpperCase() + conEspacios.slice(1);
+}
+
+function normalizarTextoComparacion(texto = '') {
+  return String(texto)
+    .replace(/\.[^/.]+$/, '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function obtenerRaizPalabra(palabra = '') {
+  if (palabra.length > 4 && palabra.endsWith('es')) {
+    return palabra.slice(0, -2);
+  }
+  if (palabra.length > 3 && palabra.endsWith('s')) {
+    return palabra.slice(0, -1);
+  }
+  return palabra;
+}
+
+function extraerTokensClave(texto = '') {
+  const limpio = normalizarTextoComparacion(texto);
+  if (!limpio) return [];
+  return limpio
+    .split(' ')
+    .filter((tok) => tok && !/^\d+$/.test(tok) && !PALABRAS_IGNORADAS.has(tok))
+    .map(obtenerRaizPalabra);
+}
+
+function calcularSimilitudProducto(nombreArchivo, nombreProducto) {
+  const normArch = normalizarTextoComparacion(nombreArchivo);
+  const normProd = normalizarTextoComparacion(nombreProducto);
+  if (!normArch || !normProd) return 0;
+
+  if (normArch === normProd) return 1;
+
+  // Coincidencia de prefijo (ej. "postrero liso 2" vs "postrero liso")
+  if (
+    normProd.length >= 4 &&
+    (normArch.startsWith(`${normProd} `) || normProd.startsWith(`${normArch} `))
+  ) {
+    return 0.94;
+  }
+
+  const tokensArch = extraerTokensClave(nombreArchivo);
+  const tokensProd = extraerTokensClave(nombreProducto);
+  if (tokensArch.length === 0 || tokensProd.length === 0) return 0;
+
+  const setArch = new Set(tokensArch);
+  let aciertos = 0;
+  for (const tok of tokensProd) {
+    if (setArch.has(tok)) aciertos++;
+  }
+
+  if (aciertos === 0) return 0;
+
+  const coberturaProd = aciertos / tokensProd.length;
+  const coberturaArch = aciertos / tokensArch.length;
+  const primeraCoincide = tokensArch[0] === tokensProd[0] ? 0.15 : 0;
+
+  return Math.min(0.93, 0.55 * coberturaProd + 0.3 * coberturaArch + primeraCoincide);
+}
+
+function buscarMejorProductoCoincidente(
+  nombreArchivo,
+  productos = [],
+  idsYaAsignados = new Set()
+) {
+  let mejorProd = null;
+  let mejorPuntaje = 0;
+
+  for (const prod of productos) {
+    if (idsYaAsignados.has(prod.id)) continue;
+    const puntaje = calcularSimilitudProducto(nombreArchivo, prod.name);
+    if (puntaje > mejorPuntaje) {
+      mejorPuntaje = puntaje;
+      mejorProd = prod;
+    }
+  }
+
+  if (mejorProd && mejorPuntaje >= 0.55) {
+    return mejorProd;
+  }
+  return null;
 }
 
 function crearFilaLoteVacia() {
@@ -55,7 +167,7 @@ export default function PanelCatalogo({
   onCerrarSesion,
 }) {
   const [pestana, setPestana] = useState('PRODUCTOS'); // 'PRODUCTOS' | 'CATEGORIAS' | 'PDF'
-  const [modoCarga, setModoCarga] = useState('INDIVIDUAL'); // 'INDIVIDUAL' | 'LOTE'
+  const [modoCarga, setModoCarga] = useState('INDIVIDUAL'); // 'INDIVIDUAL' | 'LOTE' | 'REEMPLAZAR'
 
   // Estado categorías
   const [nuevaCategoria, setNuevaCategoria] = useState('');
@@ -82,8 +194,15 @@ export default function PanelCatalogo({
   const [arrastrandoSobre, setArrastrandoSobre] = useState(false);
   const [progresoLote, setProgresoLote] = useState('');
 
+  // Estado actualización masiva de fotos (y creación rápida de no encontrados)
+  const [filasReemplazo, setFilasReemplazo] = useState([]);
+  const [arrastrandoReemplazo, setArrastrandoReemplazo] = useState(false);
+  const [visibleNuevosReemplazo, setVisibleNuevosReemplazo] = useState(true);
+  const [idsFotosActualizadas, setIdsFotosActualizadas] = useState([]);
+
   // Filtros en tabla de productos
   const [filtroCat, setFiltroCat] = useState('TODOS');
+  const [filtroEstadoActualizacion, setFiltroEstadoActualizacion] = useState('TODOS'); // 'TODOS' | 'ACTUALIZADOS' | 'PENDIENTES'
   const [busquedaAdmin, setBusquedaAdmin] = useState('');
 
   // Generador PDF
@@ -103,6 +222,16 @@ export default function PanelCatalogo({
     [categorias]
   );
 
+  const mapaProductosPorId = useMemo(
+    () => new Map(productos.map((p) => [p.id, p])),
+    [productos]
+  );
+
+  const setIdsActualizados = useMemo(
+    () => new Set(idsFotosActualizadas),
+    [idsFotosActualizadas]
+  );
+
   const catsIdsPorProducto = useMemo(() => {
     const map = new Map();
     relacionesCategoria.forEach((rel) => {
@@ -118,9 +247,21 @@ export default function PanelCatalogo({
       const cats = catsIdsPorProducto.get(p.id) || [];
       const okCat = filtroCat === 'TODOS' || cats.includes(filtroCat);
       const okBusq = !q || p.name.toLowerCase().includes(q);
-      return okCat && okBusq;
+      const estaActualizado = setIdsActualizados.has(p.id);
+      const okEstado =
+        filtroEstadoActualizacion === 'TODOS' ||
+        (filtroEstadoActualizacion === 'ACTUALIZADOS' && estaActualizado) ||
+        (filtroEstadoActualizacion === 'PENDIENTES' && !estaActualizado);
+      return okCat && okBusq && okEstado;
     });
-  }, [productos, catsIdsPorProducto, filtroCat, busquedaAdmin]);
+  }, [
+    productos,
+    catsIdsPorProducto,
+    filtroCat,
+    busquedaAdmin,
+    setIdsActualizados,
+    filtroEstadoActualizacion,
+  ]);
 
   // --- CATEGORÍAS ---
   const crearCategoria = async (e) => {
@@ -305,6 +446,11 @@ export default function PanelCatalogo({
           .eq('id', editandoId);
 
         if (updateError) throw updateError;
+        if (archivoImagen) {
+          setIdsFotosActualizadas((prev) =>
+            prev.includes(editandoId) ? prev : [...prev, editandoId]
+          );
+        }
       } else {
         const { data: creado, error: insertError } = await supabase
           .from('products')
@@ -524,6 +670,217 @@ export default function PanelCatalogo({
     }
   };
 
+  // --- ACTUALIZAR FOTOS EN LOTE (Y CREAR NO ENCONTRADOS) ---
+  const procesarArchivosReemplazo = async (listaArchivos) => {
+    const archivos = Array.from(listaArchivos || []).filter((f) =>
+      ['image/jpeg', 'image/png', 'image/webp'].includes(f.type)
+    );
+    if (archivos.length === 0) {
+      notificar('error', 'Selecciona imágenes válidas en formato JPG, PNG o WebP.');
+      return;
+    }
+
+    notificar('', '');
+    const idsYaAsignados = new Set(
+      filasReemplazo
+        .filter((f) => f.accion === 'ACTUALIZAR' && f.productoIdDestino)
+        .map((f) => f.productoIdDestino)
+    );
+
+    const nuevasFilas = [];
+    let coincidencias = 0;
+
+    for (const file of archivos) {
+      try {
+        const optimizada = await optimizarImagenEnNavegador(file);
+        const sugerido = buscarMejorProductoCoincidente(
+          file.name,
+          productos,
+          idsYaAsignados
+        );
+
+        if (sugerido) {
+          idsYaAsignados.add(sugerido.id);
+          coincidencias++;
+        }
+
+        nuevasFilas.push({
+          idTemporal: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          archivo: optimizada,
+          nombreArchivo: file.name,
+          vistaPrevia: URL.createObjectURL(optimizada),
+          accion: sugerido ? 'ACTUALIZAR' : 'CREAR',
+          productoIdDestino: sugerido ? sugerido.id : '',
+          coincidenciaAuto: Boolean(sugerido),
+          nombreNuevo: extraerNombreDesdeArchivo(file.name),
+          precioNuevo: '',
+          categoriaIdNueva: '',
+        });
+      } catch (err) {
+        notificar('error', `Error en "${file.name}": ${err.message}`);
+      }
+    }
+
+    if (nuevasFilas.length > 0) {
+      setFilasReemplazo((prev) => [...prev, ...nuevasFilas]);
+      const noEncontradas = nuevasFilas.length - coincidencias;
+      notificar(
+        'ok',
+        `${nuevasFilas.length} foto(s) analizadas: ${coincidencias} coincidencia(s) encontrada(s) y ${noEncontradas} sin coincidencia.`
+      );
+    }
+  };
+
+  const cambiarDestinoFilaReemplazo = (idTemporal, valorSelect) => {
+    setFilasReemplazo((prev) =>
+      prev.map((fila) => {
+        if (fila.idTemporal !== idTemporal) return fila;
+        if (valorSelect === '__CREAR_NUEVO__') {
+          return {
+            ...fila,
+            accion: 'CREAR',
+            productoIdDestino: '',
+            coincidenciaAuto: false,
+          };
+        }
+        return {
+          ...fila,
+          accion: 'ACTUALIZAR',
+          productoIdDestino: valorSelect,
+          coincidenciaAuto: false,
+        };
+      })
+    );
+  };
+
+  const actualizarCampoFilaReemplazo = (idTemporal, campo, valor) => {
+    setFilasReemplazo((prev) =>
+      prev.map((fila) =>
+        fila.idTemporal === idTemporal ? { ...fila, [campo]: valor } : fila
+      )
+    );
+  };
+
+  const eliminarFilaReemplazo = (idTemporal) => {
+    setFilasReemplazo((prev) => prev.filter((f) => f.idTemporal !== idTemporal));
+  };
+
+  const aplicarLoteReemplazo = async (e) => {
+    e.preventDefault();
+    notificar('', '');
+
+    if (filasReemplazo.length === 0) {
+      notificar('error', 'Arrastra o selecciona al menos una imagen primero.');
+      return;
+    }
+
+    for (let i = 0; i < filasReemplazo.length; i++) {
+      const fila = filasReemplazo[i];
+      if (fila.accion === 'ACTUALIZAR' && !fila.productoIdDestino) {
+        notificar(
+          'error',
+          `Selecciona un producto destino para "${fila.nombreArchivo}".`
+        );
+        return;
+      }
+      if (fila.accion === 'CREAR') {
+        const precioNum = Number(fila.precioNuevo);
+        if (!fila.nombreNuevo.trim()) {
+          notificar(
+            'error',
+            `Ingresa un nombre para el producto nuevo "${fila.nombreArchivo}".`
+          );
+          return;
+        }
+        if (
+          String(fila.precioNuevo).trim() === '' ||
+          Number.isNaN(precioNum) ||
+          precioNum < 0
+        ) {
+          notificar(
+            'error',
+            `Ingresa un precio válido en Bs. para "${fila.nombreNuevo.trim()}" o quita la fila si no deseas subirla.`
+          );
+          return;
+        }
+      }
+    }
+
+    setGuardandoProd(true);
+    let totalActualizados = 0;
+    let totalCreados = 0;
+    const nuevosIdsMarcados = [];
+
+    try {
+      for (let i = 0; i < filasReemplazo.length; i++) {
+        const fila = filasReemplazo[i];
+        setProgresoLote(`Procesando ${i + 1} de ${filasReemplazo.length}...`);
+
+        const imageUrl = await subirArchivoWebp(fila.archivo);
+
+        if (fila.accion === 'ACTUALIZAR') {
+          const { error: updateError } = await supabase
+            .from('products')
+            .update({
+              image_url: imageUrl,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', fila.productoIdDestino);
+
+          if (updateError) throw updateError;
+          totalActualizados++;
+          nuevosIdsMarcados.push(fila.productoIdDestino);
+        } else {
+          const { data: creado, error: insertError } = await supabase
+            .from('products')
+            .insert({
+              name: fila.nombreNuevo.trim(),
+              price_bs: Number(fila.precioNuevo),
+              is_visible: visibleNuevosReemplazo,
+              image_url: imageUrl,
+              image_url_2: null,
+            })
+            .select('id')
+            .single();
+
+          if (insertError) throw insertError;
+
+          if (fila.categoriaIdNueva) {
+            const { error: relError } = await supabase
+              .from('product_categories')
+              .insert({
+                product_id: creado.id,
+                category_id: fila.categoriaIdNueva,
+              });
+            if (relError) throw relError;
+          }
+
+          totalCreados++;
+          nuevosIdsMarcados.push(creado.id);
+        }
+      }
+
+      await onRecargarTodo();
+      setIdsFotosActualizadas((prev) =>
+        Array.from(new Set([...prev, ...nuevosIdsMarcados]))
+      );
+      setFilasReemplazo([]);
+      setProgresoLote('');
+      notificar(
+        'ok',
+        `Listo: ${totalActualizados} foto(s) actualizada(s) y ${totalCreados} producto(s) nuevo(s) publicado(s).`
+      );
+    } catch (err) {
+      notificar(
+        'error',
+        err.message || 'Ocurrió un error al actualizar las fotos del lote.'
+      );
+    } finally {
+      setProgresoLote('');
+      setGuardandoProd(false);
+    }
+  };
+
   const alternarVisibilidad = async (prod) => {
     notificar('', '');
     const { error } = await supabase
@@ -570,6 +927,8 @@ export default function PanelCatalogo({
       setGenerandoPdf(false);
     }
   };
+
+  const totalPendientes = Math.max(0, productos.length - idsFotosActualizadas.length);
 
   return (
     <section className="space-y-6 rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs">
@@ -653,7 +1012,7 @@ export default function PanelCatalogo({
       {/* --- PESTAÑA PRODUCTOS --- */}
       {pestana === 'PRODUCTOS' && (
         <div className="space-y-6">
-          {/* Selector de modo: 1 producto vs Varios productos por lote */}
+          {/* Selector de modo: 1 producto vs Lote nuevo vs Actualizar fotos */}
           {!editandoId && (
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -686,6 +1045,22 @@ export default function PanelCatalogo({
               >
                 <Layers className="h-3.5 w-3.5" />
                 <span>Agregar varios productos (por lote)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setModoCarga('REEMPLAZAR');
+                  notificar('', '');
+                }}
+                className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition cursor-pointer ${
+                  modoCarga === 'REEMPLAZAR'
+                    ? 'bg-slate-800 text-white'
+                    : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span>Actualizar fotos (por lote)</span>
               </button>
             </div>
           )}
@@ -1057,6 +1432,283 @@ export default function PanelCatalogo({
             </form>
           )}
 
+          {/* MODO ACTUALIZAR FOTOS POR LOTE (Y CREAR NO ENCONTRADOS) */}
+          {modoCarga === 'REEMPLAZAR' && !editandoId && (
+            <form
+              onSubmit={aplicarLoteReemplazo}
+              className="space-y-4 rounded-2xl border border-slate-200/80 bg-[#FAFAFA] p-4 sm:p-5"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    Actualizar fotos existentes por lote
+                  </h2>
+                  <p className="text-[11px] text-slate-500">
+                    Arrastra tus fotos mezcladas: empareja automáticamente con productos parecidos (conservando precios y categorías) y te permite crear allí mismo los que no existan.
+                  </p>
+                </div>
+                {filasReemplazo.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setFilasReemplazo([])}
+                    className="text-xs font-medium text-slate-500 hover:text-slate-800 cursor-pointer"
+                  >
+                    Limpiar lista
+                  </button>
+                )}
+              </div>
+
+              {/* Zona Dropzone */}
+              <label
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setArrastrandoReemplazo(true);
+                }}
+                onDragLeave={() => setArrastrandoReemplazo(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setArrastrandoReemplazo(false);
+                  procesarArchivosReemplazo(e.dataTransfer.files);
+                }}
+                className={`flex flex-col items-center justify-center rounded-2xl border-2 border-dashed p-5 text-center transition cursor-pointer ${
+                  arrastrandoReemplazo
+                    ? 'border-slate-900 bg-slate-100'
+                    : 'border-slate-300 bg-white hover:border-slate-400'
+                }`}
+              >
+                <RefreshCw className="h-6 w-6 text-slate-500" />
+                <p className="mt-1.5 text-xs font-semibold text-slate-800">
+                  Arrastra aquí todas las fotos nuevas o haz clic para seleccionarlas
+                </p>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  Compara las palabras del nombre de archivo con tus {productos.length} productos publicados
+                </p>
+                <input
+                  type="file"
+                  multiple
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={(e) => {
+                    procesarArchivosReemplazo(e.target.files);
+                    e.target.value = '';
+                  }}
+                  className="hidden"
+                />
+              </label>
+
+              {filasReemplazo.length > 0 && (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white px-3.5 py-2.5">
+                    <span className="text-[11px] font-medium text-slate-600">
+                      {
+                        filasReemplazo.filter((f) => f.accion === 'ACTUALIZAR')
+                          .length
+                      }{' '}
+                      para actualizar foto ·{' '}
+                      {filasReemplazo.filter((f) => f.accion === 'CREAR').length}{' '}
+                      sin coincidencia (crear como nuevo)
+                    </span>
+
+                    <label className="inline-flex items-center gap-2 text-[11px] font-medium text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={visibleNuevosReemplazo}
+                        onChange={(e) =>
+                          setVisibleNuevosReemplazo(e.target.checked)
+                        }
+                        className="h-3.5 w-3.5 rounded border-slate-300"
+                      />
+                      <span>Publicar los nuevos como visibles</span>
+                    </label>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    {filasReemplazo.map((fila, idx) => {
+                      const prodDestino =
+                        fila.accion === 'ACTUALIZAR'
+                          ? mapaProductosPorId.get(fila.productoIdDestino)
+                          : null;
+
+                      return (
+                        <div
+                          key={fila.idTemporal}
+                          className={`rounded-xl border p-3 transition ${
+                            fila.accion === 'CREAR'
+                              ? 'border-amber-300 bg-amber-50/40'
+                              : 'border-slate-200 bg-white'
+                          }`}
+                        >
+                          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                            {/* Foto nueva + archivo */}
+                            <div className="flex items-center gap-2.5 min-w-0 lg:w-5/12">
+                              <span className="w-4 shrink-0 text-[11px] font-bold text-slate-400">
+                                {idx + 1}.
+                              </span>
+                              <img
+                                src={fila.vistaPrevia}
+                                alt={fila.nombreArchivo}
+                                className="h-14 w-14 shrink-0 rounded-xl border border-slate-200 bg-[#FAFAFA] object-contain p-0.5"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p
+                                  title={fila.nombreArchivo}
+                                  className="truncate text-xs font-semibold text-slate-800"
+                                >
+                                  {fila.nombreArchivo}
+                                </p>
+                                {fila.accion === 'ACTUALIZAR' ? (
+                                  <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                                    <CheckCircle2 className="h-3 w-3" />
+                                    {fila.coincidenciaAuto
+                                      ? 'Coincidencia sugerida'
+                                      : 'Producto asignado'}
+                                  </span>
+                                ) : (
+                                  <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                                    <AlertCircle className="h-3 w-3" />
+                                    Producto no encontrado
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Comparación con foto actual + selector de acción */}
+                            <div className="flex flex-1 items-center gap-2.5">
+                              {prodDestino && (
+                                <>
+                                  <ArrowRight className="hidden h-4 w-4 shrink-0 text-slate-400 sm:block" />
+                                  <img
+                                    src={prodDestino.image_url || EMPRESA.logoUrl}
+                                    alt={prodDestino.name}
+                                    title={`Foto actual: ${prodDestino.name}`}
+                                    className="h-14 w-14 shrink-0 rounded-xl border border-slate-200 bg-[#FAFAFA] object-contain p-0.5"
+                                  />
+                                </>
+                              )}
+
+                              <div className="min-w-0 flex-1">
+                                <label className="mb-1 block text-[10px] font-medium text-slate-500">
+                                  {fila.accion === 'ACTUALIZAR'
+                                    ? 'Reemplazar foto de:'
+                                    : 'Vincular a producto existente o crear nuevo:'}
+                                </label>
+                                <select
+                                  value={
+                                    fila.accion === 'CREAR'
+                                      ? '__CREAR_NUEVO__'
+                                      : fila.productoIdDestino
+                                  }
+                                  onChange={(e) =>
+                                    cambiarDestinoFilaReemplazo(
+                                      fila.idTemporal,
+                                      e.target.value
+                                    )
+                                  }
+                                  className="w-full rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-800 outline-none focus:border-slate-400"
+                                >
+                                  <option value="__CREAR_NUEVO__">
+                                    + Crear como producto nuevo
+                                  </option>
+                                  {productos.map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                      {p.name} ({formatearBs(p.price_bs)})
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  eliminarFilaReemplazo(fila.idTemporal)
+                                }
+                                title="Omitir esta foto"
+                                className="shrink-0 rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600 cursor-pointer"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Campos rápidos cuando la foto es un producto nuevo */}
+                          {fila.accion === 'CREAR' && (
+                            <div className="mt-3 grid grid-cols-1 gap-2 border-t border-amber-200/70 pt-3 sm:grid-cols-12">
+                              <div className="sm:col-span-6">
+                                <input
+                                  type="text"
+                                  value={fila.nombreNuevo}
+                                  onChange={(e) =>
+                                    actualizarCampoFilaReemplazo(
+                                      fila.idTemporal,
+                                      'nombreNuevo',
+                                      e.target.value
+                                    )
+                                  }
+                                  placeholder="Nombre del producto nuevo *"
+                                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-slate-400"
+                                />
+                              </div>
+
+                              <div className="sm:col-span-3">
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  value={fila.precioNuevo}
+                                  onChange={(e) =>
+                                    actualizarCampoFilaReemplazo(
+                                      fila.idTemporal,
+                                      'precioNuevo',
+                                      e.target.value
+                                    )
+                                  }
+                                  placeholder="Precio Bs. *"
+                                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-slate-400"
+                                />
+                              </div>
+
+                              <div className="sm:col-span-3">
+                                <select
+                                  value={fila.categoriaIdNueva}
+                                  onChange={(e) =>
+                                    actualizarCampoFilaReemplazo(
+                                      fila.idTemporal,
+                                      'categoriaIdNueva',
+                                      e.target.value
+                                    )
+                                  }
+                                  className="w-full rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 outline-none focus:border-slate-400"
+                                >
+                                  <option value="">Sin categoría</option>
+                                  {categorias.map((c) => (
+                                    <option key={c.id} value={c.id}>
+                                      {c.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="submit"
+                      disabled={guardandoProd}
+                      className="rounded-xl bg-slate-900 px-5 py-2.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+                    >
+                      {guardandoProd
+                        ? progresoLote || 'Aplicando cambios...'
+                        : `Aplicar cambios (${filasReemplazo.length})`}
+                    </button>
+                  </div>
+                </>
+              )}
+            </form>
+          )}
+
           {/* Filtros y listado */}
           <div className="space-y-3">
             <div className="flex flex-col gap-2 sm:flex-row">
@@ -1079,6 +1731,21 @@ export default function PanelCatalogo({
                   </option>
                 ))}
               </select>
+              {idsFotosActualizadas.length > 0 && (
+                <select
+                  value={filtroEstadoActualizacion}
+                  onChange={(e) => setFiltroEstadoActualizacion(e.target.value)}
+                  className="rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-xs font-medium text-emerald-900 outline-none"
+                >
+                  <option value="TODOS">Todos ({productos.length})</option>
+                  <option value="ACTUALIZADOS">
+                    Foto actualizada ({idsFotosActualizadas.length})
+                  </option>
+                  <option value="PENDIENTES">
+                    Sin actualizar ({totalPendientes})
+                  </option>
+                </select>
+              )}
             </div>
 
             <div className="divide-y divide-slate-100 rounded-2xl border border-slate-200/80">
@@ -1086,11 +1753,16 @@ export default function PanelCatalogo({
                 const nombresCats = (catsIdsPorProducto.get(prod.id) || [])
                   .map((id) => mapaCats.get(id))
                   .filter(Boolean);
+                const fueActualizado = setIdsActualizados.has(prod.id);
 
                 return (
                   <div
                     key={prod.id}
-                    className="flex flex-wrap items-center justify-between gap-3 p-3.5"
+                    className={`flex flex-wrap items-center justify-between gap-3 p-3.5 transition ${
+                      fueActualizado
+                        ? 'border-l-4 border-l-emerald-500 bg-emerald-50/45'
+                        : ''
+                    }`}
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <img
@@ -1099,9 +1771,16 @@ export default function PanelCatalogo({
                         className="h-12 w-12 shrink-0 rounded-xl border border-slate-100 bg-[#FAFAFA] object-contain p-1"
                       />
                       <div className="min-w-0">
-                        <p className="truncate text-xs font-semibold text-slate-900">
-                          {prod.name}
-                        </p>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <p className="truncate text-xs font-semibold text-slate-900">
+                            {prod.name}
+                          </p>
+                          {fueActualizado && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
+                              <Check className="h-2.5 w-2.5" /> Foto actualizada
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs font-medium text-slate-700">
                           {formatearBs(prod.price_bs)} ·{' '}
                           <span
